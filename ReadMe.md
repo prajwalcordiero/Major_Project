@@ -1,4 +1,4 @@
-# ResQ-AI — How It Works
+# ResQ-AI (Stampede Manager) — How It Works
 ### A speaking script for the demo / viva
 
 ---
