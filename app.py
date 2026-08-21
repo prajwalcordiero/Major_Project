@@ -136,7 +136,7 @@ st.session_state.setdefault("history", None)
 
 
 # ──────────────────────────── layout ────────────────────────────────
-st.title("🚨 ResQ-AI — Real-Time Crowd Risk Monitor")
+st.title("Stamepede Manager - Real-Time Crowd Risk Monitor")
 
 banner_ph = st.empty()
 kpi_ph = st.container()
