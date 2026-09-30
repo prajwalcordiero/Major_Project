@@ -380,7 +380,7 @@ st.session_state.setdefault(
 # ───────────────────────── Main layout ────────────────────────────
 
 st.title(
-    "Stamepede Manager - Real-Time Crowd Risk Monitor"
+    "Stamepede Manager - Real Time Crowd Risk Monitor"
 )
 
 
