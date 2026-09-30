@@ -4,7 +4,7 @@ ResQ-AI — Live Crowd Risk Dashboard
 ====================================
 A CCTV-style monitoring app. Point it at a video file, a webcam or an RTSP
 stream and it analyses frame by frame as the footage plays: live people count,
-live density heatmap, live crowd-risk verdict, and a rolling risk timeline.
+live density heatmap, live stampede verdict, and a rolling risk timeline.
 
 Run locally:
     python -m streamlit run app.py
@@ -12,11 +12,9 @@ Run locally:
 Keep app.py and resq_ai_analyzer.py in the same folder.
 """
 
-import html
 import os
 import tempfile
 import time
-from datetime import datetime
 from collections import deque
 
 import cv2
@@ -128,166 +126,6 @@ def banner_class(score):
         return "b-warn"
 
     return "b-ok"
-
-
-def _safe_max(series, default=0.0):
-    """Return a numeric maximum without failing on an empty/invalid series."""
-    if series is None or len(series) == 0:
-        return default
-    values = pd.to_numeric(series, errors="coerce").dropna()
-    return float(values.max()) if not values.empty else default
-
-
-def _safe_mean(series, default=0.0):
-    """Return a numeric mean without failing on an empty/invalid series."""
-    if series is None or len(series) == 0:
-        return default
-    values = pd.to_numeric(series, errors="coerce").dropna()
-    return float(values.mean()) if not values.empty else default
-
-
-def build_session_summary(df):
-    """Build a compact summary from one analysis run."""
-    if df is None or df.empty:
-        return None
-
-    time_values = pd.to_numeric(df.get("time_s"), errors="coerce").dropna()
-    duration = float(time_values.max()) if not time_values.empty else 0.0
-
-    risk = pd.to_numeric(df.get("risk"), errors="coerce").fillna(0.0)
-    count = pd.to_numeric(df.get("count"), errors="coerce").fillna(0.0)
-    mean_density = pd.to_numeric(
-        df.get("mean_density"), errors="coerce"
-    ).fillna(0.0)
-    peak_density = pd.to_numeric(
-        df.get("peak_density"), errors="coerce"
-    ).fillna(0.0)
-
-    # Estimate time spent in each risk band from consecutive samples.
-    time_in_bands = {
-        "Normal": 0.0,
-        "Warning": 0.0,
-        "Danger": 0.0,
-        "Critical": 0.0,
-    }
-
-    if len(df) > 1 and "time_s" in df.columns:
-        t = pd.to_numeric(df["time_s"], errors="coerce").to_numpy()
-        r = risk.to_numpy()
-        for i in range(len(df) - 1):
-            if pd.isna(t[i]) or pd.isna(t[i + 1]):
-                continue
-            dt = max(0.0, float(t[i + 1] - t[i]))
-            score = float(r[i])
-
-            if score >= RISK_CRITICAL:
-                time_in_bands["Critical"] += dt
-            elif score >= RISK_DANGER:
-                time_in_bands["Danger"] += dt
-            elif score >= RISK_WARN:
-                time_in_bands["Warning"] += dt
-            else:
-                time_in_bands["Normal"] += dt
-
-    alarm_count = 0
-    if "alarm" in df.columns:
-        alarm_count = int(
-            pd.Series(df["alarm"]).fillna(False).astype(bool).sum()
-        )
-
-    return {
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "samples": int(len(df)),
-        "duration_s": duration,
-        "max_people": int(round(_safe_max(count))),
-        "average_people": _safe_mean(count),
-        "max_density": _safe_max(peak_density),
-        "average_density": _safe_mean(mean_density),
-        "max_risk": _safe_max(risk),
-        "average_risk": _safe_mean(risk),
-        "alarm_samples": alarm_count,
-        "time_in_bands": time_in_bands,
-    }
-
-
-def build_html_report(summary, df):
-    """Create a standalone HTML report that can be saved or shared."""
-    if not summary:
-        return ""
-
-    band_rows = "".join(
-        f"<tr><td>{html.escape(label)}</td><td>{seconds:.1f} s</td></tr>"
-        for label, seconds in summary["time_in_bands"].items()
-    )
-
-    table_rows = ""
-    if df is not None and not df.empty:
-        columns = [
-            c
-            for c in [
-                "time_s",
-                "count",
-                "mean_density",
-                "peak_density",
-                "risk",
-                "status",
-                "alarm",
-            ]
-            if c in df.columns
-        ]
-        preview = df[columns].tail(100).copy()
-        table_rows = preview.to_html(
-            index=False,
-            classes="metrics",
-            border=0,
-        )
-
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ResQ-AI Crowd Risk Report</title>
-<style>
-body {{ font-family: Arial, sans-serif; margin: 32px; background:#0f172a; color:#e2e8f0; }}
-.card {{ background:#1e293b; border-radius:12px; padding:20px; margin:16px 0; }}
-h1 {{ margin-bottom:4px; }}
-.grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }}
-.metric {{ background:#334155; padding:16px; border-radius:10px; }}
-.value {{ font-size:26px; font-weight:700; margin-top:6px; }}
-table {{ width:100%; border-collapse:collapse; }}
-th,td {{ padding:8px; border-bottom:1px solid #475569; text-align:left; }}
-.small {{ color:#94a3b8; }}
-</style>
-</head>
-<body>
-<h1>🚨 ResQ-AI Crowd Risk Report</h1>
-<p class="small">Generated {html.escape(summary["generated_at"])}</p>
-
-<div class="card">
-<div class="grid">
-<div class="metric"><div>Maximum people</div><div class="value">{summary["max_people"]}</div></div>
-<div class="metric"><div>Average people</div><div class="value">{summary["average_people"]:.1f}</div></div>
-<div class="metric"><div>Maximum density</div><div class="value">{summary["max_density"]:.2f} p/m²</div></div>
-<div class="metric"><div>Average density</div><div class="value">{summary["average_density"]:.2f} p/m²</div></div>
-<div class="metric"><div>Maximum risk</div><div class="value">{summary["max_risk"] * 100:.1f}%</div></div>
-<div class="metric"><div>Samples</div><div class="value">{summary["samples"]}</div></div>
-</div>
-</div>
-
-<div class="card">
-<h2>Estimated time by risk band</h2>
-<table><thead><tr><th>Risk band</th><th>Time</th></tr></thead>
-<tbody>{band_rows}</tbody></table>
-<p class="small">Time is estimated from consecutive analysis samples and depends on playback/frame-skip settings.</p>
-</div>
-
-<div class="card">
-<h2>Metrics (last 100 samples)</h2>
-{table_rows}
-</div>
-</body>
-</html>"""
 
 
 # ───────────────────────── Sidebar ─────────────────────────────────
@@ -526,13 +364,6 @@ if c2.button(
     st.session_state.running = False
 
 
-if st.sidebar.button("🗑 Clear previous results", width="stretch"):
-    st.session_state.history = None
-    st.session_state.summary = None
-    st.session_state.running = False
-    st.rerun()
-
-
 # Initialize session state
 
 st.session_state.setdefault(
@@ -545,19 +376,11 @@ st.session_state.setdefault(
     None,
 )
 
-st.session_state.setdefault(
-    "summary",
-    None,
-)
-
 
 # ───────────────────────── Main layout ────────────────────────────
 
 st.title(
-    "ResQ-AI — Real-Time Crowd Risk Monitor"
-)
-st.caption(
-    "Live people detection, crowd density, risk scoring and post-run analytics."
+    "Stamepede Manager - Real Time Crowd Risk Monitor"
 )
 
 
@@ -607,82 +430,13 @@ chart_ph = st.empty()
 dl_ph = st.empty()
 
 
-# ───────────────────────── Analytics helpers ────────────────────────
-
-
-def render_session_report(df):
-    """Render post-run analytics and export controls."""
-    if df is None or df.empty:
-        return
-
-    summary = build_session_summary(df)
-    st.session_state.summary = summary
-
-    st.markdown("## 📊 Session analytics")
-    st.caption(
-        f"Processed {summary['samples']:,} analysis samples over "
-        f"{summary['duration_s']:.1f} seconds."
-    )
-
-    a1, a2, a3, a4, a5 = st.columns(5)
-    a1.metric("Peak people", summary["max_people"])
-    a2.metric("Average people", f"{summary['average_people']:.1f}")
-    a3.metric("Peak density", f"{summary['max_density']:.2f} p/m²")
-    a4.metric("Peak risk", f"{summary['max_risk'] * 100:.1f}%")
-    a5.metric("Alarm samples", summary["alarm_samples"])
-
-    st.markdown("### Risk & density history")
-    chart_df = df.copy()
-    chart_cols = [
-        c for c in ["risk", "peak_density"]
-        if c in chart_df.columns
-    ]
-    if "time_s" in chart_df.columns and chart_cols:
-        st.line_chart(
-            chart_df.set_index("time_s")[chart_cols]
-        )
-
-    b1, b2, b3 = st.columns(3)
-    b1.download_button(
-        "⬇ Download metrics CSV",
-        df.to_csv(index=False),
-        "resq_ai_metrics.csv",
-        "text/csv",
-        width="stretch",
-    )
-    b2.download_button(
-        "⬇ Download HTML report",
-        build_html_report(summary, df),
-        "resq_ai_report.html",
-        "text/html",
-        width="stretch",
-    )
-    if b3.button("🗑 Clear session report", width="stretch"):
-        st.session_state.history = None
-        st.session_state.summary = None
-        st.rerun()
-
-    with st.expander("Risk-band timing"):
-        timing = pd.DataFrame(
-            [
-                {
-                    "Risk band": label,
-                    "Estimated time (s)": round(seconds, 1),
-                }
-                for label, seconds in summary["time_in_bands"].items()
-            ]
-        )
-        st.dataframe(
-            timing,
-            hide_index=True,
-            width="stretch",
-        )
-
+# ───────────────────────── Idle screen ─────────────────────────────
 
 def render_idle():
+
     banner_ph.markdown(
         '<div class="banner b-ok">'
-        'STANDBY — no active stream'
+        'STANDBY — no stream'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -694,28 +448,10 @@ def render_idle():
         (m_peak, "Peak density"),
         (m_risk, "Risk"),
     ]:
-        ph.metric(lbl, "—")
 
-    if st.session_state.history is not None:
-        df = st.session_state.history
-
-        st.markdown("### Last completed run")
-
-        chart_cols = [
-            c for c in ["risk", "peak_density"]
-            if c in df.columns
-        ]
-        if "time_s" in df.columns and chart_cols:
-            chart_ph.line_chart(
-                df.set_index("time_s")[chart_cols]
-            )
-
-        render_session_report(df)
-    else:
-        st.info(
-            "Pick a source in the sidebar and press **Start**. "
-            "When the run finishes, session analytics and an HTML "
-            "report will appear here."
+        ph.metric(
+            lbl,
+            "—",
         )
 
 
@@ -811,7 +547,6 @@ else:
     # ───────────────────── Runtime variables ───────────────────────
 
     rows = []
-    st.session_state.summary = None
 
     risk_hist = deque(
         maxlen=600
@@ -1026,12 +761,21 @@ else:
     # ───────────────────── Save history ───────────────────────────
 
     if rows:
-        st.session_state.history = pd.DataFrame(rows)
-        st.session_state.summary = build_session_summary(
-            st.session_state.history
+
+        st.session_state.history = pd.DataFrame(
+            rows
         )
 
+        dl_ph.download_button(
+            "⬇ Download metrics CSV",
+            st.session_state.history.to_csv(
+                index=False
+            ),
+            "resq_ai_metrics.csv",
+            "text/csv",
+        )
+
+
     st.success(
-        "Stream finished. Scroll down to view the session analytics "
-        "and export the report."
+        "Stream finished."
     )
